@@ -1,0 +1,299 @@
+Option Explicit
+
+'==============================================================
+' Module_ImportCSV — Importe les CSV produits par le script Python
+'   v6.1 : création automatique des colonnes manquantes
+'          + mapping par NOM de colonne (corrige le conflit Module_Gestion)
+'==============================================================
+
+Public Sub ImporterCSV()
+    Dim fd As FileDialog
+    Dim cheminCas As String, cheminCont As String, dossier As String
+    
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = "Selectionner le fichier _import_cas.csv"
+        .Filters.Clear
+        .Filters.Add "Fichiers CSV", "*.csv"
+        .InitialFileName = ThisWorkbook.Path & "\"
+        .AllowMultiSelect = False
+        If .Show <> -1 Then
+            MsgBox "Import annule.", vbInformation
+            Exit Sub
+        End If
+        cheminCas = .SelectedItems(1)
+    End With
+    
+    dossier = Left(cheminCas, InStrRev(cheminCas, "\"))
+    cheminCont = dossier & "_import_contacts.csv"
+    
+    Dim nbImportes As Long, nbDoublons As Long, nbErreurs As Long
+    nbImportes = 0: nbDoublons = 0: nbErreurs = 0
+    
+    ImporterCasDepuisCSV cheminCas, nbImportes, nbDoublons, nbErreurs
+    
+    Dim nbContacts As Long
+    nbContacts = 0
+    If Dir(cheminCont) <> "" Then
+        ImporterContactsDepuisCSV cheminCont, nbContacts
+    End If
+    
+    On Error Resume Next
+    If nbImportes > 0 Or nbDoublons > 0 Then
+        Kill cheminCas
+        Kill cheminCont
+    End If
+    On Error GoTo 0
+    
+    MsgBox "Import termine !" & vbCrLf & vbCrLf & _
+           "Cas importes : " & nbImportes & vbCrLf & _
+           "Doublons ignores : " & nbDoublons & vbCrLf & _
+           "Contacts importes : " & nbContacts & vbCrLf & _
+           "Erreurs : " & nbErreurs, _
+           vbInformation, "Import CSV"
+End Sub
+
+Private Sub ImporterCasDepuisCSV(chemin As String, _
+    ByRef nbOK As Long, ByRef nbDup As Long, ByRef nbErr As Long)
+    
+    Dim lo As ListObject
+    Set lo = ThisWorkbook.Sheets("BD_Cas").ListObjects("tblCas")
+    NettoyerExemple lo
+    
+    Dim lignes() As String
+    lignes = LireCSV_UTF8(chemin)
+    If UBound(lignes) < 1 Then Exit Sub
+    
+    ' Création automatique des colonnes manquantes (v6.1)
+    CreerColonnesManquantes lo, lignes(0)
+    
+    ' Construire le mapping CSV col index -> Excel col index par nom
+    Dim enTetesCSV() As String
+    enTetesCSV = ParserLigneCSV(lignes(0), ";")
+    Dim colMap() As Long
+    ReDim colMap(UBound(enTetesCSV))
+    Dim m As Long
+    For m = 0 To UBound(enTetesCSV)
+        colMap(m) = 0
+        Dim nomCSV As String
+        nomCSV = Trim(enTetesCSV(m))
+        If nomCSV <> "" Then
+            Dim cc As ListColumn
+            For Each cc In lo.ListColumns
+                If LCase(cc.Name) = LCase(nomCSV) Then
+                    colMap(m) = cc.Index
+                    Exit For
+                End If
+            Next cc
+        End If
+    Next m
+    
+    Dim i As Long, j As Long
+    Dim champs() As String
+    
+    For i = 1 To UBound(lignes)
+        If Trim(lignes(i)) = "" Then GoTo NextCas
+        champs = ParserLigneCSV(lignes(i), ";")
+        If UBound(champs) < 0 Then GoTo NextCas
+        
+        Dim idCas As String
+        idCas = Trim(champs(0))
+        If idCas = "" Then
+            nbErr = nbErr + 1
+            GoTo NextCas
+        End If
+        
+        If EstDoublonCas(lo, idCas, champs) Then
+            nbDup = nbDup + 1
+            GoTo NextCas
+        End If
+        
+        Dim nr As ListRow
+        Set nr = lo.ListRows.Add
+        For j = 0 To UBound(champs)
+            If j <= UBound(colMap) Then
+                If colMap(j) > 0 Then
+                    Dim valCas As String
+                    valCas = Replace(champs(j), "\n", vbLf)
+                    nr.Range.Cells(1, colMap(j)).Value = valCas
+                End If
+            End If
+        Next j
+        nbOK = nbOK + 1
+NextCas:
+    Next i
+End Sub
+
+Private Sub ImporterContactsDepuisCSV(chemin As String, ByRef nbOK As Long)
+    Dim lo As ListObject
+    Set lo = ThisWorkbook.Sheets("BD_Contacts").ListObjects("tblContacts")
+    NettoyerExemple lo
+    
+    Dim lignes() As String
+    lignes = LireCSV_UTF8(chemin)
+    If UBound(lignes) < 1 Then Exit Sub
+    
+    ' Création automatique des colonnes manquantes (v6.1)
+    CreerColonnesManquantes lo, lignes(0)
+    
+    ' Construire le mapping CSV col index -> Excel col index par nom
+    Dim enTetesC() As String
+    enTetesC = ParserLigneCSV(lignes(0), ";")
+    Dim colMapC() As Long
+    ReDim colMapC(UBound(enTetesC))
+    Dim mC As Long
+    For mC = 0 To UBound(enTetesC)
+        colMapC(mC) = 0
+        Dim nomCSVC As String
+        nomCSVC = Trim(enTetesC(mC))
+        If nomCSVC <> "" Then
+            Dim ccC As ListColumn
+            For Each ccC In lo.ListColumns
+                If LCase(ccC.Name) = LCase(nomCSVC) Then
+                    colMapC(mC) = ccC.Index
+                    Exit For
+                End If
+            Next ccC
+        End If
+    Next mC
+    
+    Dim i As Long, j As Long
+    Dim champs() As String
+    
+    For i = 1 To UBound(lignes)
+        If Trim(lignes(i)) = "" Then GoTo NextCont
+        champs = ParserLigneCSV(lignes(i), ";")
+        If UBound(champs) < 0 Then GoTo NextCont
+        If Trim(champs(0)) = "" Then GoTo NextCont
+        
+        Dim nr As ListRow
+        Set nr = lo.ListRows.Add
+        For j = 0 To UBound(champs)
+            If j <= UBound(colMapC) Then
+                If colMapC(j) > 0 Then
+                    Dim valCont As String
+                    valCont = Replace(champs(j), "\n", vbLf)
+                    nr.Range.Cells(1, colMapC(j)).Value = valCont
+                End If
+            End If
+        Next j
+        nbOK = nbOK + 1
+NextCont:
+    Next i
+End Sub
+
+' Création automatique des colonnes manquantes (v6.1)
+Private Sub CreerColonnesManquantes(lo As ListObject, ligneEntete As String)
+    Dim enTetes() As String
+    enTetes = ParserLigneCSV(ligneEntete, ";")
+    
+    Dim k As Long
+    For k = 0 To UBound(enTetes)
+        Dim nomCol As String
+        nomCol = Trim(enTetes(k))
+        If nomCol <> "" Then
+            Dim existe As Boolean
+            existe = False
+            Dim col As ListColumn
+            For Each col In lo.ListColumns
+                If LCase(col.Name) = LCase(nomCol) Then
+                    existe = True
+                    Exit For
+                End If
+            Next col
+            If Not existe Then
+                lo.ListColumns.Add
+                lo.ListColumns(lo.ListColumns.Count).Name = nomCol
+            End If
+        End If
+    Next k
+End Sub
+
+Private Function EstDoublonCas(lo As ListObject, idCas As String, champs() As String) As Boolean
+    EstDoublonCas = False
+    If lo.DataBodyRange Is Nothing Then Exit Function
+    
+    Dim cell As Range
+    For Each cell In lo.DataBodyRange.Columns(1).Cells
+        If Trim(CStr(cell.Value)) = idCas Then
+            EstDoublonCas = True
+            Exit Function
+        End If
+    Next cell
+    
+    If UBound(champs) >= 7 Then
+        Dim nom As String, prenom As String, ddn As String
+        nom = LCase(Trim(champs(5)))
+        prenom = LCase(Trim(champs(6)))
+        ddn = Trim(champs(7))
+        If nom <> "" And prenom <> "" And ddn <> "" Then
+            Dim r As Long
+            For r = 1 To lo.DataBodyRange.Rows.Count
+                If LCase(Trim(CStr(lo.DataBodyRange.Cells(r, 6).Value))) = nom And _
+                   LCase(Trim(CStr(lo.DataBodyRange.Cells(r, 7).Value))) = prenom And _
+                   Trim(CStr(lo.DataBodyRange.Cells(r, 8).Value)) = ddn Then
+                    EstDoublonCas = True
+                    Exit Function
+                End If
+            Next r
+        End If
+    End If
+End Function
+
+Private Sub NettoyerExemple(lo As ListObject)
+    If lo.DataBodyRange Is Nothing Then Exit Sub
+    If lo.ListRows.Count = 0 Then Exit Sub
+    If Trim(CStr(lo.ListRows(1).Range.Cells(1, 1).Value)) = "Exemple" Then
+        lo.ListRows(1).Delete
+    End If
+End Sub
+
+Private Function LireCSV_UTF8(chemin As String) As String()
+    Dim stream As Object
+    Set stream = CreateObject("ADODB.Stream")
+    With stream
+        .Type = 2
+        .Charset = "utf-8"
+        .Open
+        .LoadFromFile chemin
+        Dim contenu As String
+        contenu = .ReadText(-1)
+        .Close
+    End With
+    If Left(contenu, 1) = ChrW(65279) Then contenu = Mid(contenu, 2)
+    LireCSV_UTF8 = Split(contenu, vbCrLf)
+End Function
+
+Private Function ParserLigneCSV(ligne As String, sep As String) As String()
+    Dim resultat() As String
+    Dim nbChamps As Long, pos As Long
+    Dim dansGuillemets As Boolean
+    Dim champCourant As String, c As String
+    
+    nbChamps = 0
+    dansGuillemets = False
+    champCourant = ""
+    
+    For pos = 1 To Len(ligne)
+        c = Mid(ligne, pos, 1)
+        If c = """" Then
+            If pos < Len(ligne) And Mid(ligne, pos + 1, 1) = """" Then
+                champCourant = champCourant & """"
+                pos = pos + 1
+            Else
+                dansGuillemets = Not dansGuillemets
+            End If
+        ElseIf c = sep And Not dansGuillemets Then
+            ReDim Preserve resultat(nbChamps)
+            resultat(nbChamps) = champCourant
+            nbChamps = nbChamps + 1
+            champCourant = ""
+        Else
+            champCourant = champCourant & c
+        End If
+    Next pos
+    
+    ReDim Preserve resultat(nbChamps)
+    resultat(nbChamps) = champCourant
+    ParserLigneCSV = resultat
+End Function
