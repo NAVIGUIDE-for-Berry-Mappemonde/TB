@@ -1,0 +1,642 @@
+Option Explicit
+
+Private Const WS_CAS As String = "BD_Cas"
+Private Const WS_CONT As String = "BD_Contacts"
+Private Const TBL_CAS As String = "tblCas"
+Private Const TBL_CONT As String = "tblContacts"
+Private Const WS_GESTION As String = "Gestion"
+Private Const COL_SUIVI As String = "Suivi"
+Private Const COL_NOTES As String = "Notes_Suivi"
+Private Const COL_CHEMIN As String = "Chemin_Dossier"
+
+Private mTypeSel As String
+Private mIdSel As String
+Private mRowSel As Long
+
+Private Function ColonneExiste(lo As ListObject, n As String) As Boolean
+    Dim lc As ListColumn: ColonneExiste = False
+    For Each lc In lo.ListColumns
+        If LCase(lc.Name) = LCase(n) Then ColonneExiste = True: Exit Function
+    Next lc
+End Function
+
+Private Function GetColIndex(lo As ListObject, n As String) As Long
+    Dim lc As ListColumn: GetColIndex = 0
+    For Each lc In lo.ListColumns
+        If LCase(lc.Name) = LCase(n) Then GetColIndex = lc.Index: Exit Function
+    Next lc
+End Function
+
+Private Function TrouverLigneTable(lo As ListObject, idV As String) As Long
+    TrouverLigneTable = 0
+    If lo.DataBodyRange Is Nothing Then Exit Function
+    Dim r As Long
+    For r = 1 To lo.DataBodyRange.Rows.Count
+        If Trim(CStr(lo.DataBodyRange.Cells(r, 1).Value)) = idV Then TrouverLigneTable = r: Exit Function
+    Next r
+End Function
+
+Public Function ExtraireSIGMI(txt As String) As String
+    ExtraireSIGMI = ""
+    Dim p As Long: p = InStr(1, txt, "SI-GMI:", vbTextCompare)
+    If p > 0 Then
+        Dim s As String: s = Mid(txt, p + 7)
+        s = Trim(Left(s, InStr(s & "|", "|") - 1))
+        ExtraireSIGMI = Trim(Replace(s, "]", ""))
+    End If
+End Function
+
+Public Function ExtraireNAM(txt As String) As String
+    ExtraireNAM = ""
+    Dim p As Long: p = InStr(1, txt, "NAM:", vbTextCompare)
+    If p > 0 Then
+        Dim s As String: s = Mid(txt, p + 4)
+        s = Trim(Left(s, InStr(s & "]", "]") - 1))
+        ExtraireNAM = Trim(Replace(s, "|", ""))
+    End If
+End Function
+
+Public Function ExtraireChamp(txt As String, champ As String) As String
+    ExtraireChamp = ""
+    Dim p As Long: p = InStr(1, txt, champ & ":", vbTextCompare)
+    If p > 0 Then
+        Dim s As String: s = Mid(txt, p + Len(champ) + 1)
+        Dim pP As Long, pL As Long, pE As Long
+        pP = InStr(s, "|"): pL = InStr(s, vbLf)
+        If pP = 0 Then pP = 9999
+        If pL = 0 Then pL = 9999
+        pE = pP: If pL < pE Then pE = pL
+        If pE = 9999 Then pE = Len(s) + 1
+        ExtraireChamp = Trim(Left(s, pE - 1))
+    End If
+End Function
+
+Public Function CalculerAge(ddn As String) As String
+    CalculerAge = ""
+    On Error Resume Next
+    If ddn = "" Then Exit Function
+    Dim d As Date: d = CDate(ddn)
+    If Err.Number <> 0 Then Exit Function
+    Dim age As Long: age = DateDiff("yyyy", d, Date)
+    If Date < DateSerial(Year(Date), Month(d), Day(d)) Then age = age - 1
+    CalculerAge = CStr(age)
+    On Error GoTo 0
+End Function
+
+Public Sub AjouterColonnesSiAbsentes()
+    On Error Resume Next
+    Dim lo As ListObject, c As Variant
+    Dim cols As Variant: cols = Array(COL_SUIVI, COL_NOTES, COL_CHEMIN, "Adresse_Usager", "Telephone_Usager")
+    Set lo = ThisWorkbook.Sheets(WS_CAS).ListObjects(TBL_CAS)
+    If Not lo Is Nothing Then
+        For Each c In cols
+            If Not ColonneExiste(lo, CStr(c)) Then lo.ListColumns.Add: lo.ListColumns(lo.ListColumns.Count).Name = CStr(c)
+        Next c
+    End If
+    Set lo = ThisWorkbook.Sheets(WS_CONT).ListObjects(TBL_CONT)
+    If Not lo Is Nothing Then
+        For Each c In cols
+            If Not ColonneExiste(lo, CStr(c)) Then lo.ListColumns.Add: lo.ListColumns(lo.ListColumns.Count).Name = CStr(c)
+        Next c
+    End If
+    On Error GoTo 0
+End Sub
+
+Public Sub InitialiserGestionSiAbsent()
+    On Error Resume Next: AjouterColonnesSiAbsentes: On Error GoTo 0
+    Dim e As Boolean, ws As Worksheet: e = False
+    For Each ws In ThisWorkbook.Worksheets
+        If ws.Name = WS_GESTION Then e = True: Exit For
+    Next ws
+    If Not e Then InitialiserGestion Else RafraichirListe
+End Sub
+
+Public Sub AllerVersGestion()
+    ThisWorkbook.Sheets(WS_GESTION).Activate
+End Sub
+
+Public Sub InitialiserGestion()
+    Application.ScreenUpdating = False
+    AjouterColonnesSiAbsentes
+    On Error Resume Next: Application.DisplayAlerts = False
+    ThisWorkbook.Sheets(WS_GESTION).Delete
+    Application.DisplayAlerts = True: On Error GoTo 0
+    Dim wsG As Worksheet
+    Set wsG = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    wsG.Name = WS_GESTION: wsG.Tab.Color = RGB(31, 78, 120)
+
+    wsG.Columns("A").ColumnWidth = 3
+    wsG.Columns("B").ColumnWidth = 30
+    wsG.Columns("C").ColumnWidth = 11
+    Dim cc As Long
+    For cc = 4 To 12: wsG.Columns(cc).ColumnWidth = 7: Next cc
+    wsG.Columns("M").ColumnWidth = 11
+    wsG.Columns("N").ColumnWidth = 9
+    wsG.Columns("O").ColumnWidth = 9
+
+    Dim rr As Long
+    For rr = 1 To 19: wsG.Rows(rr).RowHeight = 20: Next rr
+    wsG.Rows(1).RowHeight = 22
+    wsG.Rows(12).RowHeight = 30
+    Dim rrr As Long
+    For rrr = 14 To 19: wsG.Rows(rrr).RowHeight = 22: Next rrr
+
+    ' Row 1: Folder path
+    wsG.Range("C1").Value = "Dossier:"
+    wsG.Range("C1").Font.Bold = True: wsG.Range("C1").Font.Size = 9
+    wsG.Range("C1").Font.Color = RGB(31, 78, 120)
+    wsG.Range("D1:L1").Merge
+    With wsG.Range("D1:L1")
+        .Interior.Color = RGB(255, 255, 200)
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlMedium
+        .Value = ""
+    End With
+
+    ' Rows 2-11: Summary
+    wsG.Cells(2, 3).Value = "SI-GMI:"
+    wsG.Cells(3, 3).Value = "NAM:"
+    wsG.Cells(4, 3).Value = "Nom:"
+    wsG.Cells(5, 3).Value = "Prenom:"
+    wsG.Cells(6, 3).Value = "DDN/Age/Sexe:"
+    wsG.Cells(7, 3).Value = "Statut:"
+    wsG.Cells(8, 3).Value = "Medecin:"
+    wsG.Cells(9, 3).Value = "Pays/Arrivee:"
+    wsG.Cells(10, 3).Value = "Medication:"
+    wsG.Cells(11, 3).Value = "Resistance:"
+    wsG.Range("C2:C11").Font.Bold = True
+    wsG.Range("C2:C11").Font.Size = 8
+    wsG.Range("C2:C11").Font.Color = RGB(31, 78, 120)
+    wsG.Range("D2:L2").Merge
+    wsG.Range("D3:L3").Merge
+    wsG.Range("D4:L4").Merge
+    wsG.Range("D5:L5").Merge
+    wsG.Range("D6:L6").Merge
+    wsG.Range("D7:L7").Merge
+    wsG.Range("D8:L8").Merge
+    wsG.Range("D9:L9").Merge
+    wsG.Range("D10:L10").Merge
+    wsG.Range("D11:L11").Merge
+    wsG.Range("D2:L11").Font.Size = 8
+    wsG.Range("D2").Value = "(Cliquez sur un dossier)"
+    wsG.Range("D2").Font.Italic = True
+
+    ' Row 12: Note input
+    wsG.Range("C12").Value = "Note:"
+    wsG.Range("C12").Font.Bold = True: wsG.Range("C12").Font.Size = 9
+    wsG.Range("C12").Font.Color = RGB(31, 78, 120)
+    wsG.Range("D12:L12").Merge
+    With wsG.Range("D12:L12")
+        .Interior.Color = RGB(255, 255, 200)
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlMedium
+        .WrapText = True: .VerticalAlignment = xlTop
+        .Value = ""
+    End With
+
+    ' Row 13: Notes label + Ajouter button
+    wsG.Range("C13").Value = "Notes:"
+    wsG.Range("C13").Font.Bold = True: wsG.Range("C13").Font.Size = 8
+    Dim bN As Shape
+    Set bN = wsG.Shapes.AddShape(msoShapeRoundedRectangle, wsG.Range("I13").Left, wsG.Range("C13").Top + 1, 90, 17)
+    bN.Name = "btn_AjouterNote": bN.Fill.ForeColor.RGB = RGB(0, 112, 60)
+    bN.TextFrame2.TextRange.Text = "+ Ajouter"
+    bN.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = vbWhite
+    bN.TextFrame2.TextRange.Font.Size = 8
+    bN.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+    bN.OnAction = "AjouterNote"
+
+    ' Word preview M2:M9
+    wsG.Cells(2, 13).Value = "Nom:"
+    wsG.Range("N2:O2").Merge
+    wsG.Cells(3, 13).Value = "Prenom:"
+    wsG.Range("N3:O3").Merge
+    wsG.Cells(4, 13).Value = "Age:"
+    wsG.Range("N4:O4").Merge
+    wsG.Cells(5, 13).Value = "DDN:"
+    wsG.Range("N5:O5").Merge
+    wsG.Cells(6, 13).Value = "NAM/RAMQ:"
+    wsG.Range("N6:O6").Merge
+    wsG.Cells(7, 13).Value = "SI-GMI:"
+    wsG.Range("N7:O7").Merge
+    wsG.Cells(8, 13).Value = "Adresse:"
+    wsG.Range("N8:O8").Merge
+    wsG.Cells(9, 13).Value = "Telephone:"
+    wsG.Range("N9:O9").Merge
+    wsG.Range("M2:M9").Font.Bold = True: wsG.Range("M2:M9").Font.Size = 8
+    wsG.Range("N2:O9").Font.Size = 8
+
+    ' Buttons
+    Dim bW As Shape
+    Set bW = wsG.Shapes.AddShape(msoShapeRoundedRectangle, wsG.Range("M10").Left, wsG.Range("M10").Top, 130, 18)
+    bW.Name = "btn_GenererWord": bW.Fill.ForeColor.RGB = RGB(31, 78, 120)
+    bW.TextFrame2.TextRange.Text = "Generer note Word"
+    bW.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = vbWhite
+    bW.TextFrame2.TextRange.Font.Size = 9
+    bW.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+    bW.OnAction = "GenererNoteWord"
+
+    Dim bO As Shape
+    Set bO = wsG.Shapes.AddShape(msoShapeRoundedRectangle, wsG.Range("M11").Left, wsG.Range("M11").Top, 130, 18)
+    bO.Name = "btn_OuvrirDossier": bO.Fill.ForeColor.RGB = RGB(100, 100, 100)
+    bO.TextFrame2.TextRange.Text = "Ouvrir dossier"
+    bO.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = vbWhite
+    bO.TextFrame2.TextRange.Font.Size = 9
+    bO.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+    bO.OnAction = "OuvrirDossierExplorateur"
+
+    Dim bCh As Shape
+    Set bCh = wsG.Shapes.AddShape(msoShapeRoundedRectangle, wsG.Range("M12").Left, wsG.Range("M12").Top, 130, 18)
+    bCh.Name = "btn_SauverChemin": bCh.Fill.ForeColor.RGB = RGB(0, 112, 60)
+    bCh.TextFrame2.TextRange.Text = "Sauver chemin"
+    bCh.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = vbWhite
+    bCh.TextFrame2.TextRange.Font.Size = 9
+    bCh.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+    bCh.OnAction = "SauvegarderCheminDossier"
+
+    RafraichirListe
+    wsG.Activate
+    Application.ScreenUpdating = True
+    MsgBox "Onglet Gestion cree! Cliquez sur un dossier.", vbInformation
+End Sub
+
+Public Sub RafraichirListe()
+    Dim wsG As Worksheet
+    On Error Resume Next: Set wsG = ThisWorkbook.Sheets(WS_GESTION)
+    If wsG Is Nothing Then Exit Sub
+    On Error GoTo 0
+    Application.ScreenUpdating = False
+    Dim nms() As String, cnt As Long: cnt = 0
+    Dim shp As Shape
+    For Each shp In wsG.Shapes
+        If Left(shp.Name, 5) = "btnS_" Or Left(shp.Name, 5) = "btnD_" Then
+            cnt = cnt + 1: ReDim Preserve nms(1 To cnt): nms(cnt) = shp.Name
+        End If
+    Next shp
+    Dim ii As Long
+    For ii = 1 To cnt: wsG.Shapes(nms(ii)).Delete: Next ii
+
+    Dim mx As Long: mx = 200
+    Dim tTy() As String, tId() As String, tDtE() As String
+    Dim tNm() As String, tPr() As String, tDN() As String
+    Dim tSv() As String, tCm() As String
+    ReDim tTy(1 To mx): ReDim tId(1 To mx): ReDim tDtE(1 To mx)
+    ReDim tNm(1 To mx): ReDim tPr(1 To mx): ReDim tDN(1 To mx)
+    ReDim tSv(1 To mx): ReDim tCm(1 To mx)
+    Dim n As Long: n = 0
+
+    Dim loCas As ListObject
+    Set loCas = ThisWorkbook.Sheets(WS_CAS).ListObjects(TBL_CAS)
+    If Not loCas.DataBodyRange Is Nothing Then
+        Dim cS As Long: cS = GetColIndex(loCas, COL_SUIVI)
+        Dim r As Long
+        For r = 1 To loCas.DataBodyRange.Rows.Count
+            Dim iC As String: iC = Trim(CStr(loCas.DataBodyRange.Cells(r, 1).Value))
+            If iC <> "" And iC <> "Exemple" Then
+                n = n + 1
+                tTy(n) = "CAS": tId(n) = iC
+                tDtE(n) = Trim(CStr(loCas.DataBodyRange.Cells(r, 5).Value))
+                tNm(n) = Trim(CStr(loCas.DataBodyRange.Cells(r, 6).Value))
+                tPr(n) = Trim(CStr(loCas.DataBodyRange.Cells(r, 7).Value))
+                tDN(n) = Trim(CStr(loCas.DataBodyRange.Cells(r, 8).Value))
+                tCm(n) = Trim(CStr(loCas.DataBodyRange.Cells(r, 21).Value))
+                If cS > 0 Then tSv(n) = Trim(CStr(loCas.DataBodyRange.Cells(r, cS).Value)) Else tSv(n) = ""
+            End If
+        Next r
+    End If
+
+    Dim loCo As ListObject
+    Set loCo = ThisWorkbook.Sheets(WS_CONT).ListObjects(TBL_CONT)
+    If Not loCo.DataBodyRange Is Nothing Then
+        Dim cSo As Long: cSo = GetColIndex(loCo, COL_SUIVI)
+        Dim cCm As Long: cCm = GetColIndex(loCo, "Commentaires")
+        For r = 1 To loCo.DataBodyRange.Rows.Count
+            Dim iCo As String: iCo = Trim(CStr(loCo.DataBodyRange.Cells(r, 1).Value))
+            If iCo <> "" And iCo <> "Exemple" Then
+                n = n + 1
+                tTy(n) = "CONTACT": tId(n) = iCo
+                tDtE(n) = Trim(CStr(loCo.DataBodyRange.Cells(r, 3).Value))
+                tNm(n) = Trim(CStr(loCo.DataBodyRange.Cells(r, 6).Value))
+                tPr(n) = Trim(CStr(loCo.DataBodyRange.Cells(r, 7).Value))
+                tDN(n) = Trim(CStr(loCo.DataBodyRange.Cells(r, 8).Value))
+                If cCm > 0 Then tCm(n) = Trim(CStr(loCo.DataBodyRange.Cells(r, cCm).Value)) Else tCm(n) = ""
+                If cSo > 0 Then tSv(n) = Trim(CStr(loCo.DataBodyRange.Cells(r, cSo).Value)) Else tSv(n) = ""
+            End If
+        Next r
+    End If
+    If n = 0 Then Application.ScreenUpdating = True: Exit Sub
+
+    Dim i As Long, j As Long, tmp As String
+    For i = 1 To n - 1
+        For j = i + 1 To n
+            If tDtE(i) < tDtE(j) Then
+                tmp = tTy(i): tTy(i) = tTy(j): tTy(j) = tmp
+                tmp = tId(i): tId(i) = tId(j): tId(j) = tmp
+                tmp = tDtE(i): tDtE(i) = tDtE(j): tDtE(j) = tmp
+                tmp = tNm(i): tNm(i) = tNm(j): tNm(j) = tmp
+                tmp = tPr(i): tPr(i) = tPr(j): tPr(j) = tmp
+                tmp = tDN(i): tDN(i) = tDN(j): tDN(j) = tmp
+                tmp = tSv(i): tSv(i) = tSv(j): tSv(j) = tmp
+                tmp = tCm(i): tCm(i) = tCm(j): tCm(j) = tmp
+            End If
+        Next j
+    Next i
+
+    Dim mxR As Long: mxR = n
+    Dim rw As Long, sg As String
+    For i = 1 To mxR
+        rw = i
+        If rw > 19 Then wsG.Rows(rw).RowHeight = 20
+        sg = ExtraireSIGMI(tCm(i))
+        If sg = "" Then sg = tId(i)
+        Dim bS As Shape
+        Set bS = wsG.Shapes.AddShape(msoShapeRoundedRectangle, _
+            wsG.Cells(rw, 1).Left + 1, wsG.Cells(rw, 1).Top + 2, 14, 14)
+        bS.Name = "btnS_" & tId(i) & "_" & tTy(i)
+        If UCase(tSv(i)) = "OUI" Then bS.Fill.ForeColor.RGB = RGB(0, 180, 0) Else bS.Fill.ForeColor.RGB = RGB(180, 180, 180)
+        bS.TextFrame2.TextRange.Text = ""
+        bS.Line.Visible = msoFalse
+        bS.OnAction = "ToggleSuivi"
+        Dim bD As Shape
+        Set bD = wsG.Shapes.AddShape(msoShapeRoundedRectangle, _
+            wsG.Cells(rw, 2).Left, wsG.Cells(rw, 2).Top, wsG.Cells(rw, 2).Width, 19)
+        bD.Name = "btnD_" & tId(i) & "_" & tTy(i)
+        If tTy(i) = "CAS" Then bD.Fill.ForeColor.RGB = RGB(220, 235, 250) Else bD.Fill.ForeColor.RGB = RGB(220, 245, 220)
+        bD.Line.ForeColor.RGB = RGB(180, 180, 180)
+        bD.TextFrame2.TextRange.Text = tNm(i) & ", " & tPr(i)
+        bD.TextFrame2.TextRange.Font.Size = 8
+        bD.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = RGB(30, 30, 30)
+        bD.TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignLeft
+        bD.TextFrame2.MarginLeft = 4
+        bD.OnAction = "CliquerDossier"
+    Next i
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub CliquerDossier()
+    Dim nm As String: nm = Application.Caller
+    Dim pts() As String: pts = Split(nm, "_")
+    If UBound(pts) < 2 Then Exit Sub
+    Dim typeV As String: typeV = pts(UBound(pts))
+    Dim idV As String: idV = pts(1)
+    Dim pp As Long
+    For pp = 2 To UBound(pts) - 1
+        idV = idV & "_" & pts(pp)
+    Next pp
+    mIdSel = idV: mTypeSel = typeV
+    Dim wsG As Worksheet: Set wsG = ThisWorkbook.Sheets(WS_GESTION)
+    Dim lo As ListObject
+    If typeV = "CAS" Then Set lo = ThisWorkbook.Sheets(WS_CAS).ListObjects(TBL_CAS) Else Set lo = ThisWorkbook.Sheets(WS_CONT).ListObjects(TBL_CONT)
+    Dim tR As Long: tR = TrouverLigneTable(lo, idV)
+    mRowSel = tR: If tR = 0 Then Exit Sub
+    Dim cCh As Long: cCh = GetColIndex(lo, COL_CHEMIN)
+    If cCh > 0 Then wsG.Range("D1").Value = CStr(lo.DataBodyRange.Cells(tR, cCh).Value)
+    RemplirResume lo, tR, wsG
+    AfficherNotes idV, typeV, wsG
+    Dim shp As Shape
+    For Each shp In wsG.Shapes
+        If Left(shp.Name, 5) = "btnD_" Then
+            If shp.Name = nm Then shp.Fill.ForeColor.RGB = RGB(173, 216, 230) Else _
+                If InStr(shp.Name, "_CAS") > 0 Then shp.Fill.ForeColor.RGB = RGB(220, 235, 250) Else shp.Fill.ForeColor.RGB = RGB(220, 245, 220)
+        End If
+    Next shp
+End Sub
+
+Public Sub ToggleSuivi()
+    Dim nm As String: nm = Application.Caller
+    Dim pts() As String: pts = Split(nm, "_")
+    If UBound(pts) < 2 Then Exit Sub
+    Dim typeV As String: typeV = pts(UBound(pts))
+    Dim idV As String: idV = pts(1)
+    Dim pp As Long
+    For pp = 2 To UBound(pts) - 1
+        idV = idV & "_" & pts(pp)
+    Next pp
+    Dim lo As ListObject
+    If typeV = "CAS" Then Set lo = ThisWorkbook.Sheets(WS_CAS).ListObjects(TBL_CAS) Else Set lo = ThisWorkbook.Sheets(WS_CONT).ListObjects(TBL_CONT)
+    Dim tR As Long: tR = TrouverLigneTable(lo, idV)
+    If tR = 0 Then Exit Sub
+    Dim cSv As Long: cSv = GetColIndex(lo, COL_SUIVI)
+    If cSv = 0 Then Exit Sub
+    Dim wsG As Worksheet: Set wsG = ThisWorkbook.Sheets(WS_GESTION)
+    Dim act As String: act = UCase(Trim(CStr(lo.DataBodyRange.Cells(tR, cSv).Value)))
+    If act = "OUI" Then
+        lo.DataBodyRange.Cells(tR, cSv).Value = ""
+        wsG.Shapes(nm).Fill.ForeColor.RGB = RGB(180, 180, 180)
+    Else
+        lo.DataBodyRange.Cells(tR, cSv).Value = "Oui"
+        wsG.Shapes(nm).Fill.ForeColor.RGB = RGB(0, 180, 0)
+    End If
+End Sub
+
+Private Sub RemplirResume(lo As ListObject, tR As Long, wsG As Worksheet)
+    Dim nm As String, pr As String, dn As String, sx As String
+    Dim st As String, si As String, md As String, cm As String
+    If mTypeSel = "CAS" Then
+        nm = CStr(lo.DataBodyRange.Cells(tR, 6).Value): pr = CStr(lo.DataBodyRange.Cells(tR, 7).Value)
+        dn = CStr(lo.DataBodyRange.Cells(tR, 8).Value): sx = CStr(lo.DataBodyRange.Cells(tR, 9).Value)
+        st = CStr(lo.DataBodyRange.Cells(tR, 4).Value): si = CStr(lo.DataBodyRange.Cells(tR, 10).Value)
+        md = CStr(lo.DataBodyRange.Cells(tR, 17).Value): cm = CStr(lo.DataBodyRange.Cells(tR, 21).Value)
+    Else
+        nm = CStr(lo.DataBodyRange.Cells(tR, 6).Value): pr = CStr(lo.DataBodyRange.Cells(tR, 7).Value)
+        dn = CStr(lo.DataBodyRange.Cells(tR, 8).Value): sx = CStr(lo.DataBodyRange.Cells(tR, 9).Value)
+        st = CStr(lo.DataBodyRange.Cells(tR, 5).Value): si = ""
+        md = CStr(lo.DataBodyRange.Cells(tR, 22).Value)
+        Dim cCm2 As Long: cCm2 = GetColIndex(lo, "Commentaires")
+        If cCm2 > 0 Then cm = CStr(lo.DataBodyRange.Cells(tR, cCm2).Value)
+    End If
+    Dim gmi As String, ram As String, py As String, ar As String
+    Dim med As String, res As String, adr As String, tel As String
+    gmi = ExtraireSIGMI(cm): If gmi = "" Then gmi = mIdSel
+    ram = ExtraireNAM(cm)
+    py = ExtraireChamp(cm, "Pays"): ar = ExtraireChamp(cm, "Arriv")
+    med = ExtraireChamp(cm, "dication"): res = ExtraireChamp(cm, "SISTANCE")
+    ' v9: Lire adresse et telephone depuis les colonnes dediees
+    Dim cAdr As Long: cAdr = GetColIndex(lo, "Adresse_Usager")
+    Dim cTel As Long: cTel = GetColIndex(lo, "Telephone_Usager")
+    If cAdr > 0 Then adr = CStr(lo.DataBodyRange.Cells(tR, cAdr).Value) Else adr = ""
+    If cTel > 0 Then tel = CStr(lo.DataBodyRange.Cells(tR, cTel).Value) Else tel = ""
+    ' Fallback: si colonnes vides, essayer les commentaires
+    If adr = "" Then adr = ExtraireChamp(cm, "Adresse")
+    If tel = "" Then tel = ExtraireChamp(cm, "phone")
+    wsG.Range("D2:L2").ClearContents
+    wsG.Range("D3:L3").ClearContents
+    wsG.Range("D4:L4").ClearContents
+    wsG.Range("D5:L5").ClearContents
+    wsG.Range("D6:L6").ClearContents
+    wsG.Range("D7:L7").ClearContents
+    wsG.Range("D8:L8").ClearContents
+    wsG.Range("D9:L9").ClearContents
+    wsG.Range("D10:L10").ClearContents
+    wsG.Range("D11:L11").ClearContents
+    wsG.Range("D2").Value = gmi: wsG.Range("D2").Font.Italic = False
+    wsG.Range("D3").Value = ram: wsG.Range("D4").Value = nm: wsG.Range("D5").Value = pr
+    wsG.Range("D6").Value = dn & " | " & CalculerAge(dn) & " ans | " & sx
+    wsG.Range("D7").Value = st
+    wsG.Range("D7").Font.Bold = True: wsG.Range("D7").Font.Color = RGB(139, 0, 0)
+    wsG.Range("D8").Value = si & " | " & md
+    wsG.Range("D9").Value = py & " | " & ar
+    wsG.Range("D10").Value = med
+    If res <> "" Then
+        wsG.Range("D11").Value = "!! " & res
+        wsG.Range("D11").Font.Color = vbRed: wsG.Range("D11").Font.Bold = True
+    Else
+        wsG.Range("D11").Value = "Aucune"
+    End If
+    wsG.Range("N2").Value = nm: wsG.Range("N3").Value = pr
+    wsG.Range("N4").Value = CalculerAge(dn): wsG.Range("N5").Value = dn
+    wsG.Range("N6").Value = ram: wsG.Range("N7").Value = gmi
+    wsG.Range("N8").Value = adr: wsG.Range("N9").Value = tel
+End Sub
+
+Public Sub AjouterNote()
+    Dim wsG As Worksheet: Set wsG = ThisWorkbook.Sheets(WS_GESTION)
+    If mIdSel = "" Then MsgBox "Selectionnez un dossier.", vbExclamation: Exit Sub
+    Dim ct As String: ct = Trim(CStr(wsG.Range("D12").Value))
+    If ct = "" Then MsgBox "Saisissez du texte dans la zone Note.", vbExclamation: Exit Sub
+    Dim hd As String: hd = Format(Now, "yyyy-mm-dd hh:nn")
+    Dim nc As String: nc = "[" & hd & " | " & Application.UserName & "] " & ct
+    Dim lo As ListObject
+    If mTypeSel = "CAS" Then Set lo = ThisWorkbook.Sheets(WS_CAS).ListObjects(TBL_CAS) Else Set lo = ThisWorkbook.Sheets(WS_CONT).ListObjects(TBL_CONT)
+    Dim tR As Long: tR = TrouverLigneTable(lo, mIdSel)
+    If tR > 0 Then
+        Dim cN As Long: cN = GetColIndex(lo, COL_NOTES)
+        If cN > 0 Then
+            Dim ex As String: ex = CStr(lo.DataBodyRange.Cells(tR, cN).Value)
+            If ex <> "" Then lo.DataBodyRange.Cells(tR, cN).Value = ex & vbLf & nc Else lo.DataBodyRange.Cells(tR, cN).Value = nc
+        End If
+    End If
+    wsG.Range("D12").Value = ""
+    AfficherNotes mIdSel, mTypeSel, wsG
+End Sub
+
+Public Sub AfficherNotes(idV As String, typeV As String, wsG As Worksheet)
+    wsG.Range("C14:L19").ClearContents
+    wsG.Range("C14:L19").Interior.ColorIndex = xlNone
+    wsG.Range("C14:L19").MergeCells = False
+    Dim lo As ListObject
+    If typeV = "CAS" Then Set lo = ThisWorkbook.Sheets(WS_CAS).ListObjects(TBL_CAS) Else Set lo = ThisWorkbook.Sheets(WS_CONT).ListObjects(TBL_CONT)
+    Dim tR As Long: tR = TrouverLigneTable(lo, idV)
+    If tR = 0 Then Exit Sub
+    Dim cN As Long: cN = GetColIndex(lo, COL_NOTES)
+    If cN = 0 Then Exit Sub
+    Dim an As String: an = CStr(lo.DataBodyRange.Cells(tR, cN).Value)
+    If Trim(an) = "" Then wsG.Range("C14").Value = "(Aucune note)": wsG.Range("C14").Font.Italic = True: Exit Sub
+    Dim na() As String: na = Split(an, vbLf)
+    Dim rw As Long: rw = 14
+    Dim ix As Long
+    For ix = UBound(na) To 0 Step -1
+        If rw > 19 Then Exit For
+        If Trim(na(ix)) <> "" Then
+            wsG.Range(wsG.Cells(rw, 3), wsG.Cells(rw, 12)).Merge
+            wsG.Cells(rw, 3).Value = na(ix)
+            wsG.Cells(rw, 3).WrapText = True: wsG.Cells(rw, 3).Font.Size = 7
+            If (ix Mod 2) = 0 Then
+                wsG.Range(wsG.Cells(rw, 3), wsG.Cells(rw, 12)).Interior.Color = RGB(220, 235, 250)
+            Else
+                wsG.Range(wsG.Cells(rw, 3), wsG.Cells(rw, 12)).Interior.Color = RGB(240, 240, 240)
+            End If
+            wsG.Range(wsG.Cells(rw, 3), wsG.Cells(rw, 12)).Borders.LineStyle = xlContinuous
+            rw = rw + 1
+        End If
+    Next ix
+End Sub
+
+Public Sub SauvegarderCheminDossier()
+    If mIdSel = "" Then MsgBox "Selectionnez un dossier.", vbExclamation: Exit Sub
+    Dim wsG As Worksheet: Set wsG = ThisWorkbook.Sheets(WS_GESTION)
+    Dim ch As String: ch = Trim(CStr(wsG.Range("D1").Value))
+    Dim lo As ListObject
+    If mTypeSel = "CAS" Then Set lo = ThisWorkbook.Sheets(WS_CAS).ListObjects(TBL_CAS) Else Set lo = ThisWorkbook.Sheets(WS_CONT).ListObjects(TBL_CONT)
+    Dim tR As Long: tR = TrouverLigneTable(lo, mIdSel)
+    If tR = 0 Then Exit Sub
+    Dim cCh As Long: cCh = GetColIndex(lo, COL_CHEMIN)
+    If cCh > 0 Then lo.DataBodyRange.Cells(tR, cCh).Value = ch
+    MsgBox "Chemin sauvegarde.", vbInformation
+End Sub
+
+Public Sub GenererNoteWord()
+    If mIdSel = "" Then MsgBox "Selectionnez un dossier.", vbExclamation: Exit Sub
+    Dim wsG As Worksheet: Set wsG = ThisWorkbook.Sheets(WS_GESTION)
+    Dim chM As String: chM = Trim(CStr(wsG.Range("N10").Value))
+    If chM = "" Or Dir(chM) = "" Then chM = ThisWorkbook.Path & "\nom_prenom_notes_vierge.docx"
+    If Dir(chM) = "" Then MsgBox "Modele introuvable: " & chM, vbExclamation: Exit Sub
+    Dim nV As String: nV = CStr(wsG.Range("N2").Value)
+    Dim pV As String: pV = CStr(wsG.Range("N3").Value)
+    Dim aV As String: aV = CStr(wsG.Range("N4").Value)
+    Dim dV As String: dV = CStr(wsG.Range("N5").Value)
+    Dim rV As String: rV = CStr(wsG.Range("N6").Value)
+    Dim sV As String: sV = CStr(wsG.Range("N7").Value)
+    Dim adV As String: adV = CStr(wsG.Range("N8").Value)
+    Dim tV As String: tV = CStr(wsG.Range("N9").Value)
+    Dim lo As ListObject
+    If mTypeSel = "CAS" Then Set lo = ThisWorkbook.Sheets(WS_CAS).ListObjects(TBL_CAS) Else Set lo = ThisWorkbook.Sheets(WS_CONT).ListObjects(TBL_CONT)
+    Dim tR As Long: tR = TrouverLigneTable(lo, mIdSel)
+    Dim ntV As String: ntV = ""
+    If tR > 0 Then
+        Dim cN As Long: cN = GetColIndex(lo, COL_NOTES)
+        If cN > 0 Then ntV = CStr(lo.DataBodyRange.Cells(tR, cN).Value)
+    End If
+    Dim wA As Object, wD As Object
+    On Error Resume Next
+    Set wA = GetObject(, "Word.Application")
+    If wA Is Nothing Then Set wA = CreateObject("Word.Application")
+    On Error GoTo 0
+    Set wD = wA.Documents.Open(chM)
+    On Error Resume Next
+    wD.Unprotect ""
+    On Error GoTo 0
+
+    ' Remplir les Content Controls par leur titre
+    Dim oCC As Object
+    For Each oCC In wD.ContentControls
+        Select Case oCC.Title
+            Case "Nom usager": oCC.Range.Text = nV
+            Case "Prénom usager": oCC.Range.Text = pV
+            Case "Âge usager": oCC.Range.Text = aV
+            Case "DDN usager": oCC.Range.Text = dV
+            Case "RAMQ usager": oCC.Range.Text = rV
+            Case "ID USAGER": oCC.Range.Text = sV
+            Case "ID SI-GMI": oCC.Range.Text = sV
+            Case "Adresse usager": oCC.Range.Text = adV
+            Case "Domicile usager": oCC.Range.Text = tV
+            Case "Cellulaire usager": oCC.Range.Text = ""
+            Case "Courriel usager": oCC.Range.Text = ""
+            Case "Nom répondant": oCC.Range.Text = ""
+            Case "Prénom répondant": oCC.Range.Text = ""
+            Case "Lien avec l'usager": oCC.Range.Text = ""
+            Case "Domicile répondant": oCC.Range.Text = ""
+            Case "Cellulaire répondant": oCC.Range.Text = ""
+            Case "Courriel répondant": oCC.Range.Text = ""
+        End Select
+    Next oCC
+
+    If ntV <> "" Then
+        On Error Resume Next
+        Dim lastR As Long: lastR = wD.Tables(1).Rows.Count
+        wD.Tables(1).Cell(lastR, 1).Range.Text = ntV
+        On Error GoTo 0
+    End If
+
+    With wD.Content.Find
+        .Text = "AAAA-MM-JJ"
+        .Replacement.Text = Format(Date, "yyyy-mm-dd")
+        .Execute Replace:=2
+    End With
+    Dim chD As String: chD = Trim(CStr(wsG.Range("D1").Value))
+    If chD = "" Then chD = ThisWorkbook.Path & "\"
+    If Right(chD, 1) <> "\" Then chD = chD & "\"
+    On Error Resume Next: MkDir chD: On Error GoTo 0
+    Dim nF As String: nF = UCase(nV) & "_" & pV & "_Notes_" & Format(Date, "yyyy-mm-dd") & ".docx"
+    Dim chC As String: chC = chD & nF
+    wD.SaveAs2 chC
+    wA.Visible = True
+    MsgBox "Note Word generee: " & vbCrLf & chC, vbInformation
+End Sub
+
+Public Sub OuvrirDossierExplorateur()
+    Dim wsG As Worksheet: Set wsG = ThisWorkbook.Sheets(WS_GESTION)
+    Dim ch As String: ch = Trim(CStr(wsG.Range("D1").Value))
+    If ch = "" Then MsgBox "Aucun chemin saisi.", vbExclamation: Exit Sub
+    Shell "explorer.exe " & ChrW(34) & ch & ChrW(34), vbNormalFocus
+End Sub
